@@ -24,11 +24,12 @@ type RunningItem = {
   agent?: string
   sessionID?: string
   target: string
+  depth?: number
 }
 
 export function SessionRunningMenu(props: {
   sessionID?: string
-  // The session whose running work is listed: this one, or its parent inside a subagent.
+  // The session whose own tool calls and background tasks are listed.
   owner?: string
   blocking: readonly { type: "shell" | "subagent"; partID: string; id?: string; label?: string }[]
   tasks: readonly BackgroundTask[]
@@ -50,7 +51,7 @@ export function SessionRunningMenu(props: {
   const sessionAgent = (id: string | undefined) => (id ? server.ctx.data.session.get(id)?.agent : undefined)
 
   // Foreground shells stay out: the timeline already shows them at the bottom.
-  const items = createMemo<RunningItem[]>(() => [
+  const direct = createMemo<RunningItem[]>(() => [
     ...props.blocking.flatMap((task) =>
       task.type === "subagent"
         ? [
@@ -71,6 +72,63 @@ export function SessionRunningMenu(props: {
     ),
     ...props.tasks.flatMap((task) => (task.type === "shell" ? [{ ...task, key: task.id, target: task.id }] : [])),
   ])
+
+  const items = createMemo(() => {
+    const owner = props.owner ?? props.sessionID
+
+    if (!owner) return []
+    const sessions = server.ctx.data.session.list()
+    const children = new Map<string, string[]>()
+    const entries = new Map<string, RunningItem>()
+    sessions.forEach((info) => {
+      if (!info.parentID) return
+      const siblings = children.get(info.parentID) ?? []
+      siblings.push(info.id)
+      children.set(info.parentID, siblings)
+
+      if (server.ctx.data.session.status(info.id) === "idle") return
+      entries.set(info.id, {
+        key: info.id,
+        type: "subagent",
+        label: info.title,
+        agent: info.agent,
+        sessionID: info.id,
+        target: info.id,
+      })
+    })
+
+    const roots = direct().flatMap((item) => {
+      if (item.type !== "subagent") return []
+
+      // A starting tool call can acquire its child session before its metadata arrives.
+      const info = item.sessionID
+        ? server.ctx.data.session.get(item.sessionID)
+        : sessions.find((info) => info.parentID === owner && !!item.label && info.title === item.label)
+
+      const key = info?.id ?? item.key
+      entries.set(key, { ...item, key, sessionID: info?.id ?? item.sessionID, agent: item.agent ?? info?.agent })
+
+      return [key]
+    })
+
+    const seen = new Set([owner])
+
+    const visit = (id: string, depth: number): RunningItem[] => {
+      if (seen.has(id)) return []
+      seen.add(id)
+      const item = entries.get(id)
+
+      return [
+        ...(item ? [{ ...item, depth }] : []),
+        ...(children.get(id) ?? []).flatMap((child) => visit(child, depth + (item ? 1 : 0))),
+      ]
+    }
+
+    return [
+      ...[...roots, ...(children.get(owner) ?? [])].flatMap((id) => visit(id, 0)),
+      ...direct().filter((item) => item.type === "shell"),
+    ]
+  })
 
   const viewing = (item: RunningItem) => !!item.sessionID && item.sessionID === props.sessionID
 
@@ -230,6 +288,7 @@ export function SessionRunningMenu(props: {
                 {(item) => (
                   <Menu.Item
                     class="group/running-item"
+                    style={{ "padding-inline-start": `${12 + (item.depth ?? 0) * 16}px` }}
                     classList={{ "!bg-v2-overlay-simple-overlay-hover": viewing(item) }}
                     aria-current={viewing(item) ? "page" : undefined}
                     onSelect={() => {

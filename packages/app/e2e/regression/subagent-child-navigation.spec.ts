@@ -6,6 +6,7 @@ import { currentSession } from "../utils/mock-server"
 import { assistantMessage, session, sessionID, setupTimeline, textPart, userMessage } from "../utils/timeline"
 import { expectSessionTitle } from "../utils/waits"
 import { mockWorkspace } from "../utils/workspace"
+import { mockNestedWorkers, nestedWorkers } from "../utils/nested-workers"
 
 const directory = "C:/OpenCode/SubagentNavigation"
 
@@ -114,6 +115,50 @@ test("navigates from a running subagent card and hides background controls in th
   await page.locator('[data-component="task-tool-card"]').click()
   await expect(page).toHaveURL(new RegExp(`/session/${runningChildID}$`))
   await expect(hint).toHaveCount(0)
+})
+
+test("lists working descendants in tree order and updates when nested work finishes", async ({ page }) => {
+  const workspace = await mockNestedWorkers(page)
+  await page.goto(sessionHref(nestedWorkers.root))
+  await expect(page.getByRole("button", { name: /move running work to the background/i })).toBeVisible()
+
+  const header = page.locator("[data-session-title]")
+  await expect(header.getByRole("button", { name: "2 working", exact: true })).toBeVisible()
+  await header.getByRole("button", { name: "2 working", exact: true }).click()
+  const menu = page.getByRole("menu")
+  const rows = menu.getByRole("menuitem")
+  await expect(rows).toHaveCount(2)
+  await expect(rows.nth(0)).toContainText("Outer worker")
+  await expect(rows.nth(1)).toContainText("Inner worker")
+
+  const indentation = await rows.evaluateAll((items) =>
+    items.map((item) => Number.parseFloat(getComputedStyle(item).paddingInlineStart)),
+  )
+
+  expect(indentation[1]).toBeGreaterThan(indentation[0])
+  await rows.nth(1).click()
+  await expect(page).toHaveURL(sessionHref(nestedWorkers.inner))
+  await expectSessionTitle(page, "Inner worker")
+  await expect(header.getByRole("button", { name: /working/ })).toHaveCount(0)
+
+  await header.locator('[data-slot="session-title-parent"]').click()
+  await expect(page).toHaveURL(sessionHref(nestedWorkers.outer))
+  await header.getByRole("button", { name: "Outer worker +1 working", exact: true }).click()
+  await expect(rows).toHaveCount(1)
+  await expect(rows).toContainText("Inner worker")
+  await rows.click()
+  await expect(page).toHaveURL(sessionHref(nestedWorkers.inner))
+
+  await header.locator(`[data-slot="session-title-ancestor"][data-session-id="${nestedWorkers.root}"]`).click()
+  await expect(page).toHaveURL(sessionHref(nestedWorkers.root))
+  await expect(header.getByRole("button", { name: "2 working", exact: true })).toBeVisible()
+  await workspace.finish(nestedWorkers.inner, nestedWorkers.outer)
+  await header.getByRole("button", { name: "1 working", exact: true }).click()
+  await expect(rows).toHaveCount(1)
+  await expect(rows).toContainText("Outer worker")
+  await page.keyboard.press("Escape")
+  await workspace.finish(nestedWorkers.outer, nestedWorkers.root)
+  await expect(header.getByRole("button", { name: /working/ })).toHaveCount(0)
 })
 
 test("opens a directly linked nested subagent in its root session tab", async ({ page }) => {

@@ -31,9 +31,11 @@ export function createSessionRequestModel() {
     const id = params.id
 
     if (!id || serverSDK.connection.status() !== "connected") return
-    void Promise.all(
-      sessionTreeIDs(data.session.list(), id).map((sessionID) => data.session.form.sync(sessionID)),
-    ).catch(() => undefined)
+    void Promise.all([
+      // Hydrate active sessions and missing ancestors so a cold open can find nested workers.
+      ...data.session.active().map((sessionID) => data.session.sync(data.session.root(sessionID))),
+      ...sessionTreeIDs(data.session.list(), id).map((sessionID) => data.session.form.sync(sessionID)),
+    ]).catch(() => undefined)
   })
 
   const formRequest = createMemo((): FormInfo | undefined => {
@@ -119,14 +121,7 @@ export function createSessionRequestModel() {
     return !!id && !data.session.get(id)?.parentID
   }
 
-  // Inside a subagent, running work is the parent's, so the header lists its siblings.
-  const owner = createMemo(() => {
-    const id = params.id
-
-    if (!id) return
-
-    return data.session.get(id)?.parentID ?? id
-  })
+  const owner = () => params.id
 
   const running = createSessionBackground({
     sessionID: owner,
