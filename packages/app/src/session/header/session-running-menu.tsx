@@ -97,18 +97,12 @@ export function SessionRunningMenu(props: {
       })
     })
 
+    // Starting calls stay in the timeline until a child session ID is known; descriptions are not identities.
     const roots = direct().flatMap((item) => {
-      if (item.type !== "subagent") return []
+      if (item.type !== "subagent" || !item.sessionID) return []
+      entries.set(item.sessionID, item)
 
-      // A starting tool call can acquire its child session before its metadata arrives.
-      const info = item.sessionID
-        ? server.ctx.data.session.get(item.sessionID)
-        : sessions.find((info) => info.parentID === owner && !!item.label && info.title === item.label)
-
-      const key = info?.id ?? item.key
-      entries.set(key, { ...item, key, sessionID: info?.id ?? item.sessionID, agent: item.agent ?? info?.agent })
-
-      return [key]
+      return [item.sessionID]
     })
 
     const seen = new Set([owner])

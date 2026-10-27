@@ -6,7 +6,7 @@ import { currentSession } from "../utils/mock-server"
 import { assistantMessage, session, sessionID, setupTimeline, textPart, userMessage } from "../utils/timeline"
 import { expectSessionTitle } from "../utils/waits"
 import { mockWorkspace } from "../utils/workspace"
-import { mockNestedWorkers, nestedWorkers } from "../utils/nested-workers"
+import { mockNestedWorkers, mockStartingWorkers, nestedWorkers } from "../utils/nested-workers"
 
 const directory = "C:/OpenCode/SubagentNavigation"
 
@@ -159,6 +159,43 @@ test("lists working descendants in tree order and updates when nested work finis
   await page.keyboard.press("Escape")
   await workspace.finish(nestedWorkers.outer, nestedWorkers.root)
   await expect(header.getByRole("button", { name: /working/ })).toHaveCount(0)
+})
+
+test("keeps repeated worker descriptions separate until session IDs arrive", async ({ page }) => {
+  const workspace = await mockStartingWorkers(page)
+  // Visit the completed worker first so its matching title is already in the session cache.
+  await page.goto(sessionHref(workspace.old))
+  await expectSessionTitle(page, "Inspect code")
+
+  const header = page.locator("[data-session-title]")
+  await header.locator('[data-slot="session-title-parent"]').click()
+  await expect(page.getByRole("button", { name: /move running work to the background/i })).toBeVisible()
+  await expect(header.getByRole("button", { name: /working/ })).toHaveCount(0)
+  await workspace.start(workspace.first, "call_first")
+  await expect(header.getByRole("button", { name: "1 working", exact: true })).toBeVisible()
+  await workspace.start(workspace.second)
+  await header.getByRole("button", { name: "2 working", exact: true }).click()
+
+  const rows = page.getByRole("menu").getByRole("menuitem")
+  await expect(rows).toHaveCount(2)
+  await expect(rows.nth(0)).toContainText("Inspect code")
+  await expect(rows.nth(1)).toContainText("Inspect code")
+  await rows.nth(0).click()
+  await expect(page).toHaveURL(sessionHref(workspace.first))
+  await expectSessionTitle(page, "Inspect code")
+  await header.locator('[data-slot="session-title-parent"]').click()
+  await header.getByRole("button", { name: "2 working", exact: true }).click()
+  await rows.nth(1).hover()
+
+  const interrupted = page.waitForRequest((request) =>
+    request.method() === "POST" && new URL(request.url()).pathname.endsWith("/interrupt"),
+  )
+
+  await rows.nth(1).getByRole("button", { name: "Interrupt subagent", exact: true }).click()
+  expect(new URL((await interrupted).url()).pathname).toBe(`/api/session/${workspace.second}/interrupt`)
+  await workspace.interrupted(workspace.second)
+  await expect(page.getByRole("menu", { name: "1 working", exact: true })).toBeVisible()
+  await expect(rows).toHaveCount(1)
 })
 
 test("opens a directly linked nested subagent in its root session tab", async ({ page }) => {
